@@ -33,6 +33,39 @@
     }
     .sync-badge.ready { color: #4ade80; }
 
+    /* ★追加：入室・退室モード切替スイッチ */
+    .mode-switch-bar {
+      max-width: 480px;
+      margin: 12px auto;
+      padding: 0 15px;
+      display: flex;
+      gap: 10px;
+    }
+    .mode-btn {
+      flex: 1;
+      padding: 14px 10px;
+      font-size: 16px;
+      font-weight: bold;
+      border: 2px solid #475569;
+      border-radius: 10px;
+      background-color: #0f172a;
+      color: #94a3b8;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .mode-btn.active-in {
+      background-color: #16a34a;
+      border-color: #4ade80;
+      color: #ffffff;
+      box-shadow: 0 0 12px rgba(22, 163, 74, 0.5);
+    }
+    .mode-btn.active-out {
+      background-color: #2563eb;
+      border-color: #60a5fa;
+      color: #ffffff;
+      box-shadow: 0 0 12px rgba(37, 99, 235, 0.5);
+    }
+
     .camera-wrapper {
       position: relative;
       width: 100%;
@@ -122,6 +155,12 @@
     <div class="sync-badge" id="sync-status">データ読込中...</div>
   </div>
 
+  <!-- ★追加：モード切替スイッチ -->
+  <div class="mode-switch-bar">
+    <button id="btn-mode-in" class="mode-btn active-in" onclick="setMode('in')">🟢 入室受付モード</button>
+    <button id="btn-mode-out" class="mode-btn" onclick="setMode('out')">🔵 退室受付モード</button>
+  </div>
+
   <div id="start-area">
     <p style="color: #cbd5e1; font-size: 14px; margin-bottom: 20px;">
       下のボタンを押してカメラと通知音を有効にしてください
@@ -136,7 +175,7 @@
   <div id="result-panel" class="result-panel" style="display:none;">
     <p class="res-title" id="res-title">QRコードをかざしてください</p>
     <p class="res-name" id="res-name"></p>
-    <p class="res-sub" id="res-sub">カメラの枠内に受講票のQRを映します</p>
+    <p class="res-sub" id="res-sub">現在のモード：入室受付</p>
   </div>
 
   <div id="history-box" class="history-box" style="display:none;">
@@ -145,7 +184,6 @@
   </div>
 
   <script>
-    // ★GASのWebアプリURL（末尾の ?page=scanner なし）
     const GAS_API_URL = "https://script.google.com/macros/s/AKfycbwEE1T7AI-z1ZlBNPUE3B5tQuPqno7bl-P4CLc8zeJWKYP8jFx9A9uV8ZxA4f3-H-rY/exec";
 
     let masterData = [];
@@ -154,13 +192,35 @@
     let lastScannedText = "";
     let lastScannedTime = 0;
     let pendingSaves = 0;
+    let currentMode = "in"; // "in" = 入室モード, "out" = 退室モード
 
     window.onload = function() {
       fetchMasterData(true);
       setInterval(() => fetchMasterData(false), 20000);
     };
 
-    // GASから受講者データを取得
+    // ★モード切替処理
+    function setMode(mode) {
+      if (mode === "out" && currentMode !== "out") {
+        if (!confirm("【確認】「退室受付モード」に切り替えますか？\n※これ以降スキャンした方は退室時刻が記録されます。")) {
+          return;
+        }
+      }
+      currentMode = mode;
+      const btnIn = document.getElementById("btn-mode-in");
+      const btnOut = document.getElementById("btn-mode-out");
+
+      if (mode === "in") {
+        btnIn.className = "mode-btn active-in";
+        btnOut.className = "mode-btn";
+        showResult("default", "🟢 入室受付モード", "", "受講票のQRコードをかざしてください");
+      } else {
+        btnIn.className = "mode-btn";
+        btnOut.className = "mode-btn active-out";
+        showResult("default", "🔵 退室受付モード", "", "お帰りの受講票QRコードをかざしてください");
+      }
+    }
+
     function fetchMasterData(isInitial) {
       if (pendingSaves > 0) return;
       
@@ -234,6 +294,7 @@
       processLocalAndSave(receiptId);
     }
 
+    // ★モードに応じた判定処理
     function processLocalAndSave(id) {
       const targetRow = masterData.find(r => String(r["受付番号"]).trim() === id);
       
@@ -252,39 +313,57 @@
                       now.getMinutes().toString().padStart(2, '0') + ':' +
                       now.getSeconds().toString().padStart(2, '0');
 
-      if (isAttended && hasExited) {
-        showResult("already", "⚠️ すでに処理済みです", `${name} 先生`, "入室・退室ともに記録されています");
-        playBeep("already");
-        addHistory(name, "重複警告", timeStr);
+      // 【入室受付モードの場合】
+      if (currentMode === "in") {
+        if (isAttended) {
+          showResult("already", "⚠️ すでに入室済みです", `${name} 先生`, `入室時刻：${targetRow["確認時刻"] || "記録済"}`);
+          playBeep("already");
+          addHistory(name, "重複読込(入室済)", timeStr);
+          return;
+        }
+
+        targetRow["出席"] = "出席";
+        targetRow["確認時刻"] = timeStr;
+        targetRow["確認方法"] = "QR";
+        showResult("success", "✅ 入室受付完了", `${name} 先生`, `受付時刻：${timeStr}`);
+        playBeep("success");
+        addHistory(name, "入室受付", timeStr);
+        sendToServer(id, name, "in");
         return;
       }
 
-      if (isAttended && !hasExited) {
-        targetRow["退室時刻"] = timeStr; 
+      // 【退室受付モードの場合】
+      if (currentMode === "out") {
+        if (!isAttended) {
+          showResult("error", "❌ 入室記録がありません", `${name} 先生`, "先に入室受付を行ってください");
+          playBeep("error");
+          addHistory(name, "エラー(未入室)", timeStr);
+          return;
+        }
+        if (hasExited) {
+          showResult("already", "⚠️ すでに退室済みです", `${name} 先生`, `退室時刻：${targetRow["退室時刻"]}`);
+          playBeep("already");
+          addHistory(name, "重複読込(退室済)", timeStr);
+          return;
+        }
+
+        targetRow["退室時刻"] = timeStr;
         showResult("exit", "✅ 退室記録完了", `${name} 先生`, `お疲れ様でした（${timeStr}）`);
         playBeep("exit_success");
         addHistory(name, "退室記録", timeStr);
-        sendToServer(id, name);
+        sendToServer(id, name, "out");
         return;
       }
-
-      targetRow["出席"] = "出席";
-      targetRow["確認時刻"] = timeStr;
-      targetRow["確認方法"] = "QR";
-      showResult("success", "✅ 入室受付完了", `${name} 先生`, `受付時刻：${timeStr}`);
-      playBeep("success");
-      addHistory(name, "入室受付", timeStr);
-      sendToServer(id, name);
     }
 
-    // GASへ記録を送信
-    function sendToServer(id, name) {
+    // GASへ記録を送信（モード情報も送信）
+    function sendToServer(id, name, mode) {
       pendingSaves++;
       
       fetch(GAS_API_URL, {
         method: "POST",
         headers: { "Content-Type": "text/plain" },
-        body: JSON.stringify({ action: "checkin", id: id })
+        body: JSON.stringify({ action: "checkin", id: id, mode: mode })
       })
       .then(response => response.json())
       .then(res => {
@@ -298,12 +377,12 @@
 
     function showResult(status, title, name, sub) {
       const panel = document.getElementById("result-panel");
-      panel.className = "result-panel status-" + status;
+      panel.className = status === "default" ? "result-panel" : "result-panel status-" + status;
       document.getElementById("res-title").innerText = title;
       document.getElementById("res-name").innerText = name;
       document.getElementById("res-sub").innerText = sub;
 
-      if (navigator.vibrate) {
+      if (status !== "default" && navigator.vibrate) {
         navigator.vibrate(status === "success" || status === "exit" ? 100 : [100, 50, 100]);
       }
     }
