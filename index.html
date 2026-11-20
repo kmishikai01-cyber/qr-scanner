@@ -33,12 +33,32 @@
     }
     .sync-badge.ready { color: #4ade80; }
 
-    /* ★追加：入室・退室モード切替スイッチ */
+    /* パスコード認証画面 */
+    #auth-area {
+      max-width: 400px;
+      margin: 40px auto;
+      padding: 25px 20px;
+      background-color: #0f172a;
+      border-radius: 12px;
+    }
+    .auth-input {
+      width: 100%;
+      padding: 14px;
+      font-size: 18px;
+      text-align: center;
+      border-radius: 8px;
+      border: 1px solid #475569;
+      background: #1e293b;
+      color: #ffffff;
+      margin-bottom: 15px;
+    }
+
+    /* モード切替スイッチ */
     .mode-switch-bar {
       max-width: 480px;
       margin: 12px auto;
       padding: 0 15px;
-      display: flex;
+      display: none;
       gap: 10px;
     }
     .mode-btn {
@@ -51,7 +71,6 @@
       background-color: #0f172a;
       color: #94a3b8;
       cursor: pointer;
-      transition: all 0.15s;
     }
     .mode-btn.active-in {
       background-color: #16a34a;
@@ -75,7 +94,6 @@
     }
     #reader {
       width: 100%;
-      min-height: 300px;
     }
     #reader video {
       width: 100% !important;
@@ -85,6 +103,7 @@
 
     #start-area {
       padding: 40px 20px;
+      display: none;
     }
     .btn-start {
       background-color: #2563eb;
@@ -111,7 +130,7 @@
       border-radius: 12px;
       background-color: #334155;
       min-height: 130px;
-      display: flex;
+      display: none;
       flex-direction: column;
       justify-content: center;
       transition: background-color 0.15s;
@@ -130,6 +149,7 @@
       margin: 15px auto 30px auto;
       padding: 0 15px;
       text-align: left;
+      display: none;
     }
     .history-title { font-size: 12px; color: #94a3b8; margin-bottom: 6px; }
     .history-list {
@@ -152,11 +172,20 @@
 
   <div class="header">
     <div class="header-title">📷 産業医研修会 QR受付</div>
-    <div class="sync-badge" id="sync-status">データ読込中...</div>
+    <div class="sync-badge" id="sync-status">認証待ち</div>
   </div>
 
-  <!-- ★追加：モード切替スイッチ -->
-  <div class="mode-switch-bar">
+  <!-- パスコード認証エリア -->
+  <div id="auth-area">
+    <h3 style="margin-top:0;">🔒 受付スタッフ認証</h3>
+    <p style="font-size:13px; color:#cbd5e1; margin-bottom:15px;">受付パスコードを入力してください</p>
+    <input type="password" id="passcode-input" class="auth-input" placeholder="パスコードを入力">
+    <button class="btn-start" style="width:100%;" onclick="verifyPasscode()">認証してデータ読込</button>
+    <p id="auth-error" style="color:#f87171; font-size:13px; margin-top:12px; display:none;">パスコードが正しくありません</p>
+  </div>
+
+  <!-- モード切替スイッチ -->
+  <div class="mode-switch-bar" id="mode-bar">
     <button id="btn-mode-in" class="mode-btn active-in" onclick="setMode('in')">🟢 入室受付モード</button>
     <button id="btn-mode-out" class="mode-btn" onclick="setMode('out')">🔵 退室受付モード</button>
   </div>
@@ -172,13 +201,13 @@
     <div id="reader"></div>
   </div>
 
-  <div id="result-panel" class="result-panel" style="display:none;">
+  <div id="result-panel" class="result-panel">
     <p class="res-title" id="res-title">QRコードをかざしてください</p>
     <p class="res-name" id="res-name"></p>
     <p class="res-sub" id="res-sub">現在のモード：入室受付</p>
   </div>
 
-  <div id="history-box" class="history-box" style="display:none;">
+  <div id="history-box" class="history-box">
     <div class="history-title">直近のスキャン履歴</div>
     <ul id="history-list" class="history-list"></ul>
   </div>
@@ -186,20 +215,74 @@
   <script>
     const GAS_API_URL = "https://script.google.com/macros/s/AKfycbwEE1T7AI-z1ZlBNPUE3B5tQuPqno7bl-P4CLc8zeJWKYP8jFx9A9uV8ZxA4f3-H-rY/exec";
 
+    let savedKey = localStorage.getItem("qr_scanner_key") || "";
     let masterData = [];
     let audioCtx = null;
     let html5QrCode = null;
     let lastScannedText = "";
     let lastScannedTime = 0;
     let pendingSaves = 0;
-    let currentMode = "in"; // "in" = 入室モード, "out" = 退室モード
+    let currentMode = "in";
 
     window.onload = function() {
-      fetchMasterData(true);
-      setInterval(() => fetchMasterData(false), 20000);
+      if (savedKey) {
+        fetchMasterData(true);
+      }
+      setInterval(() => {
+        if (savedKey) fetchMasterData(false);
+      }, 20000);
     };
 
-    // ★モード切替処理
+    function verifyPasscode() {
+      const input = document.getElementById("passcode-input").value.trim();
+      if (!input) return;
+      savedKey = input;
+      document.getElementById("auth-error").style.display = "none";
+      fetchMasterData(true);
+    }
+
+    function fetchMasterData(isInitial) {
+      if (pendingSaves > 0 || !savedKey) return;
+      
+      fetch(`${GAS_API_URL}?api=getData&key=${encodeURIComponent(savedKey)}`)
+        .then(response => response.json())
+        .then(res => {
+          if (res.error === "unauthorized") {
+            localStorage.removeItem("qr_scanner_key");
+            savedKey = "";
+            document.getElementById("auth-area").style.display = "block";
+            document.getElementById("start-area").style.display = "none";
+            document.getElementById("mode-bar").style.display = "none";
+            document.getElementById("auth-error").style.display = "block";
+            document.getElementById("sync-status").innerText = "認証エラー";
+            return;
+          }
+
+          if (pendingSaves === 0 && res.rows) {
+            localStorage.setItem("qr_scanner_key", savedKey);
+            masterData = res.rows;
+            const badge = document.getElementById("sync-status");
+            badge.innerText = `同期済 (${masterData.length}名)`;
+            badge.classList.add("ready");
+
+            if (isInitial) {
+              document.getElementById("auth-area").style.display = "none";
+              document.getElementById("mode-bar").style.display = "flex";
+              document.getElementById("start-area").style.display = "block";
+              const btn = document.getElementById("btn-start");
+              btn.disabled = false;
+              btn.innerText = "📷 カメラを起動して受付開始";
+            }
+          }
+        })
+        .catch(err => {
+          console.error(err);
+          if (isInitial) {
+            document.getElementById("sync-status").innerText = "読込エラー";
+          }
+        });
+    }
+
     function setMode(mode) {
       if (mode === "out" && currentMode !== "out") {
         if (!confirm("【確認】「退室受付モード」に切り替えますか？\n※これ以降スキャンした方は退室時刻が記録されます。")) {
@@ -221,33 +304,6 @@
       }
     }
 
-    function fetchMasterData(isInitial) {
-      if (pendingSaves > 0) return;
-      
-      fetch(GAS_API_URL + "?api=getData")
-        .then(response => response.json())
-        .then(res => {
-          if (pendingSaves === 0 && res.rows) {
-            masterData = res.rows;
-            const badge = document.getElementById("sync-status");
-            badge.innerText = `同期済 (${masterData.length}名)`;
-            badge.classList.add("ready");
-
-            if (isInitial) {
-              const btn = document.getElementById("btn-start");
-              btn.disabled = false;
-              btn.innerText = "📷 カメラを起動して受付開始";
-            }
-          }
-        })
-        .catch(err => {
-          console.error(err);
-          if (isInitial) {
-            document.getElementById("sync-status").innerText = "読込エラー(再読込してください)";
-          }
-        });
-    }
-
     function startScanner() {
       const AudioContextClass = window.AudioContext || window.webkitAudioContext;
       if (AudioContextClass && !audioCtx) {
@@ -258,6 +314,7 @@
       document.getElementById("start-area").style.display = "none";
       document.getElementById("result-panel").style.display = "flex";
       document.getElementById("history-box").style.display = "block";
+      document.getElementById("reader").style.minHeight = "300px";
 
       html5QrCode = new Html5Qrcode("reader");
       html5QrCode.start(
@@ -268,6 +325,7 @@
         document.getElementById("start-area").style.display = "block";
         document.getElementById("result-panel").style.display = "none";
         document.getElementById("history-box").style.display = "none";
+        document.getElementById("reader").style.minHeight = "0";
         alert("カメラの起動に失敗しました。許可設定を確認してください。\n" + err);
       });
     }
@@ -294,7 +352,6 @@
       processLocalAndSave(receiptId);
     }
 
-    // ★モードに応じた判定処理
     function processLocalAndSave(id) {
       const targetRow = masterData.find(r => String(r["受付番号"]).trim() === id);
       
@@ -304,7 +361,7 @@
         return;
       }
 
-      const name = targetRow["１．氏 名"] || targetRow["1.氏名"] || "受講者";
+      const name = targetRow["１．氏 名"] || "受講者";
       const isAttended = targetRow["出席"] === "出席";
       const hasExited = Boolean(targetRow["退室時刻"]);
 
@@ -313,7 +370,6 @@
                       now.getMinutes().toString().padStart(2, '0') + ':' +
                       now.getSeconds().toString().padStart(2, '0');
 
-      // 【入室受付モードの場合】
       if (currentMode === "in") {
         if (isAttended) {
           showResult("already", "⚠️ すでに入室済みです", `${name} 先生`, `入室時刻：${targetRow["確認時刻"] || "記録済"}`);
@@ -324,7 +380,6 @@
 
         targetRow["出席"] = "出席";
         targetRow["確認時刻"] = timeStr;
-        targetRow["確認方法"] = "QR";
         showResult("success", "✅ 入室受付完了", `${name} 先生`, `受付時刻：${timeStr}`);
         playBeep("success");
         addHistory(name, "入室受付", timeStr);
@@ -332,7 +387,6 @@
         return;
       }
 
-      // 【退室受付モードの場合】
       if (currentMode === "out") {
         if (!isAttended) {
           showResult("error", "❌ 入室記録がありません", `${name} 先生`, "先に入室受付を行ってください");
@@ -356,14 +410,13 @@
       }
     }
 
-    // GASへ記録を送信（モード情報も送信）
     function sendToServer(id, name, mode) {
       pendingSaves++;
       
       fetch(GAS_API_URL, {
         method: "POST",
         headers: { "Content-Type": "text/plain" },
-        body: JSON.stringify({ action: "checkin", id: id, mode: mode })
+        body: JSON.stringify({ key: savedKey, action: "checkin", id: id, mode: mode })
       })
       .then(response => response.json())
       .then(res => {
