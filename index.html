@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>産業医研修会 QR受付スキャナー</title>
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: 'Helvetica Neue', Arial, 'Hiragino Sans', 'Yu Gothic', sans-serif;
+      margin: 0;
+      padding: 0;
+      background-color: #1e293b;
+      color: #ffffff;
+      text-align: center;
+    }
+    .header {
+      background-color: #0f172a;
+      padding: 12px 15px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 14px;
+    }
+    .header-title { font-weight: bold; font-size: 15px; }
+    .sync-badge {
+      background-color: #334155;
+      padding: 4px 10px;
+      border-radius: 12px;
+      font-size: 12px;
+      color: #94a3b8;
+    }
+    .sync-badge.ready { color: #4ade80; }
+
+    .camera-wrapper {
+      position: relative;
+      width: 100%;
+      max-width: 480px;
+      margin: 0 auto;
+      background: #000;
+    }
+    #reader {
+      width: 100%;
+      min-height: 300px;
+    }
+    #reader video {
+      width: 100% !important;
+      height: auto !important;
+      object-fit: cover;
+    }
+
+    #start-area {
+      padding: 40px 20px;
+    }
+    .btn-start {
+      background-color: #2563eb;
+      color: white;
+      border: none;
+      padding: 18px 30px;
+      font-size: 18px;
+      font-weight: bold;
+      border-radius: 10px;
+      cursor: pointer;
+      width: 90%;
+      max-width: 340px;
+      box-shadow: 0 4px 12px rgba(37, 99, 235, 0.4);
+    }
+    .btn-start:disabled {
+      background-color: #64748b;
+      box-shadow: none;
+    }
+
+    .result-panel {
+      max-width: 480px;
+      margin: 15px auto;
+      padding: 20px 15px;
+      border-radius: 12px;
+      background-color: #334155;
+      min-height: 130px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      transition: background-color 0.15s;
+    }
+    .result-panel.status-success { background-color: #16a34a; }
+    .result-panel.status-exit    { background-color: #2563eb; }
+    .result-panel.status-already { background-color: #d97706; }
+    .result-panel.status-error   { background-color: #dc2626; }
+
+    .res-title { font-size: 22px; font-weight: bold; margin: 0 0 8px 0; }
+    .res-name  { font-size: 26px; font-weight: bold; margin: 0; }
+    .res-sub   { font-size: 14px; margin: 6px 0 0 0; opacity: 0.9; }
+
+    .history-box {
+      max-width: 480px;
+      margin: 15px auto 30px auto;
+      padding: 0 15px;
+      text-align: left;
+    }
+    .history-title { font-size: 12px; color: #94a3b8; margin-bottom: 6px; }
+    .history-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      font-size: 13px;
+    }
+    .history-list li {
+      background: #0f172a;
+      padding: 8px 12px;
+      border-radius: 6px;
+      margin-bottom: 5px;
+      display: flex;
+      justify-content: space-between;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <div class="header-title">📷 産業医研修会 QR受付</div>
+    <div class="sync-badge" id="sync-status">データ読込中...</div>
+  </div>
+
+  <div id="start-area">
+    <p style="color: #cbd5e1; font-size: 14px; margin-bottom: 20px;">
+      下のボタンを押してカメラと通知音を有効にしてください
+    </p>
+    <button id="btn-start" class="btn-start" onclick="startScanner()" disabled>データ読込中...</button>
+  </div>
+
+  <div class="camera-wrapper">
+    <div id="reader"></div>
+  </div>
+
+  <div id="result-panel" class="result-panel" style="display:none;">
+    <p class="res-title" id="res-title">QRコードをかざしてください</p>
+    <p class="res-name" id="res-name"></p>
+    <p class="res-sub" id="res-sub">カメラの枠内に受講票のQRを映します</p>
+  </div>
+
+  <div id="history-box" class="history-box" style="display:none;">
+    <div class="history-title">直近のスキャン履歴</div>
+    <ul id="history-list" class="history-list"></ul>
+  </div>
+
+  <script>
+    // ★GASのWebアプリURL（末尾の ?page=scanner なし）
+    const GAS_API_URL = "https://script.google.com/macros/s/AKfycbwEE1T7AI-z1ZlBNPUE3B5tQuPqno7bl-P4CLc8zeJWKYP8jFx9A9uV8ZxA4f3-H-rY/exec";
+
+    let masterData = [];
+    let audioCtx = null;
+    let html5QrCode = null;
+    let lastScannedText = "";
+    let lastScannedTime = 0;
+    let pendingSaves = 0;
+
+    window.onload = function() {
+      fetchMasterData(true);
+      setInterval(() => fetchMasterData(false), 20000);
+    };
+
+    // GASから受講者データを取得
+    function fetchMasterData(isInitial) {
+      if (pendingSaves > 0) return;
+      
+      fetch(GAS_API_URL + "?api=getData")
+        .then(response => response.json())
+        .then(res => {
+          if (pendingSaves === 0 && res.rows) {
+            masterData = res.rows;
+            const badge = document.getElementById("sync-status");
+            badge.innerText = `同期済 (${masterData.length}名)`;
+            badge.classList.add("ready");
+
+            if (isInitial) {
+              const btn = document.getElementById("btn-start");
+              btn.disabled = false;
+              btn.innerText = "📷 カメラを起動して受付開始";
+            }
+          }
+        })
+        .catch(err => {
+          console.error(err);
+          if (isInitial) {
+            document.getElementById("sync-status").innerText = "読込エラー(再読込してください)";
+          }
+        });
+    }
+
+    function startScanner() {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (AudioContextClass && !audioCtx) {
+        audioCtx = new AudioContextClass();
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+      }
+
+      document.getElementById("start-area").style.display = "none";
+      document.getElementById("result-panel").style.display = "flex";
+      document.getElementById("history-box").style.display = "block";
+
+      html5QrCode = new Html5Qrcode("reader");
+      html5QrCode.start(
+        { facingMode: "environment" },
+        { fps: 10, qrbox: { width: 230, height: 230 } },
+        onScanSuccess
+      ).catch(err => {
+        document.getElementById("start-area").style.display = "block";
+        document.getElementById("result-panel").style.display = "none";
+        document.getElementById("history-box").style.display = "none";
+        alert("カメラの起動に失敗しました。許可設定を確認してください。\n" + err);
+      });
+    }
+
+    function onScanSuccess(decodedText) {
+      const nowMs = Date.now();
+      if (decodedText === lastScannedText && (nowMs - lastScannedTime) < 3500) {
+        return;
+      }
+      lastScannedText = decodedText;
+      lastScannedTime = nowMs;
+
+      let receiptId = decodedText.trim();
+      if (receiptId.includes("id=")) {
+        try {
+          const urlObj = new URL(receiptId);
+          receiptId = urlObj.searchParams.get("id") || receiptId;
+        } catch (e) {
+          const match = receiptId.match(/[?&]id=([^&]+)/);
+          if (match) receiptId = decodeURIComponent(match[1]);
+        }
+      }
+
+      processLocalAndSave(receiptId);
+    }
+
+    function processLocalAndSave(id) {
+      const targetRow = masterData.find(r => String(r["受付番号"]).trim() === id);
+      
+      if (!targetRow) {
+        showResult("error", "❌ データが見つかりません", `ID: ${id}`, "受講票のQRコードかご確認ください");
+        playBeep("error");
+        return;
+      }
+
+      const name = targetRow["１．氏 名"] || targetRow["1.氏名"] || "受講者";
+      const isAttended = targetRow["出席"] === "出席";
+      const hasExited = Boolean(targetRow["退室時刻"]);
+
+      const now = new Date();
+      const timeStr = now.getHours().toString().padStart(2, '0') + ':' +
+                      now.getMinutes().toString().padStart(2, '0') + ':' +
+                      now.getSeconds().toString().padStart(2, '0');
+
+      if (isAttended && hasExited) {
+        showResult("already", "⚠️ すでに処理済みです", `${name} 先生`, "入室・退室ともに記録されています");
+        playBeep("already");
+        addHistory(name, "重複警告", timeStr);
+        return;
+      }
+
+      if (isAttended && !hasExited) {
+        targetRow["退室時刻"] = timeStr; 
+        showResult("exit", "✅ 退室記録完了", `${name} 先生`, `お疲れ様でした（${timeStr}）`);
+        playBeep("exit_success");
+        addHistory(name, "退室記録", timeStr);
+        sendToServer(id, name);
+        return;
+      }
+
+      targetRow["出席"] = "出席";
+      targetRow["確認時刻"] = timeStr;
+      targetRow["確認方法"] = "QR";
+      showResult("success", "✅ 入室受付完了", `${name} 先生`, `受付時刻：${timeStr}`);
+      playBeep("success");
+      addHistory(name, "入室受付", timeStr);
+      sendToServer(id, name);
+    }
+
+    // GASへ記録を送信
+    function sendToServer(id, name) {
+      pendingSaves++;
+      
+      fetch(GAS_API_URL, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain" },
+        body: JSON.stringify({ action: "checkin", id: id })
+      })
+      .then(response => response.json())
+      .then(res => {
+        pendingSaves--;
+      })
+      .catch(err => {
+        pendingSaves--;
+        alert(`【通信エラー】${name}先生の記録保存に失敗しました。電波状況を確認し、もう一度スキャンしてください。`);
+      });
+    }
+
+    function showResult(status, title, name, sub) {
+      const panel = document.getElementById("result-panel");
+      panel.className = "result-panel status-" + status;
+      document.getElementById("res-title").innerText = title;
+      document.getElementById("res-name").innerText = name;
+      document.getElementById("res-sub").innerText = sub;
+
+      if (navigator.vibrate) {
+        navigator.vibrate(status === "success" || status === "exit" ? 100 : [100, 50, 100]);
+      }
+    }
+
+    function addHistory(name, action, timeStr) {
+      const list = document.getElementById("history-list");
+      const li = document.createElement("li");
+      li.innerHTML = `<span><b>${name}</b> 先生</span><span>${action} (${timeStr})</span>`;
+      list.insertBefore(li, list.firstChild);
+      if (list.children.length > 5) {
+        list.removeChild(list.lastChild);
+      }
+    }
+
+    function playTone(freq, type, startTime, duration, volume) {
+      if (!audioCtx) return;
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, startTime);
+      gain.gain.setValueAtTime(0, startTime);
+      gain.gain.linearRampToValueAtTime(volume, startTime + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start(startTime);
+      osc.stop(startTime + duration);
+    }
+
+    function playBeep(status) {
+      if (!audioCtx) return;
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      const now = audioCtx.currentTime;
+
+      if (status === 'success') {
+        playTone(880, 'sine', now, 0.4, 0.8);
+      } else if (status === 'exit_success') {
+        playTone(660, 'sine', now, 0.14, 0.8);
+        playTone(880, 'sine', now + 0.15, 0.4, 0.8);
+      } else {
+        playTone(200, 'square', now, 0.18, 0.3);
+        playTone(200, 'square', now + 0.22, 0.25, 0.3);
+      }
+    }
+  </script>
+</body>
+</html>
